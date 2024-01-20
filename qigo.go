@@ -5,12 +5,17 @@
 
 package qigo
 
-import "time"
+import (
+	"log"
+	"sync"
+	"time"
+)
 
 type QueueHandler[T any] struct {
 	queueChannel chan T
 	Queue        []T
 	fn           func([]T)
+	mu           sync.Mutex
 }
 
 func (e *QueueHandler[T]) Init(fn func([]T)) {
@@ -20,6 +25,7 @@ func (e *QueueHandler[T]) Init(fn func([]T)) {
 }
 
 func (h *QueueHandler[T]) Append(p T) {
+	println("appended -> ", p)
 	h.queueChannel <- p
 }
 
@@ -30,27 +36,31 @@ func (h *QueueHandler[T]) AppendBatch(ps []T) {
 }
 
 func (h *QueueHandler[T]) callFunction() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
 	if len(h.Queue) == 0 {
 		return
 	}
 	h.fn(h.Queue)
-	h.Queue = nil
+	h.Queue = make([]T, 0)
 }
 
 func (h *QueueHandler[T]) Start(maxTimeMS int, maxSize int) error {
-	go func() {
-		for {
-			h.Queue = append(h.Queue, <-h.queueChannel)
-			if maxSize <= len(h.Queue) {
-				h.callFunction()
-			}
-		}
-	}()
-	ticker := time.NewTicker(time.Duration(maxTimeMS) * time.Millisecond)
+	duration := time.Duration(maxTimeMS) * time.Millisecond
 	go func() {
 		for {
 			select {
-			case _ = <-ticker.C:
+			case p := <-h.queueChannel:
+				h.mu.Lock()
+				h.Queue = append(h.Queue, p)
+				h.mu.Unlock()
+				if maxSize <= len(h.Queue) {
+					log.Println("Processing by max batch size ...")
+					h.callFunction()
+				}
+			case <-time.After(duration):
+				log.Println("Processing by ticker ...")
 				h.callFunction()
 			}
 		}
